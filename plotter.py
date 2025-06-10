@@ -2,81 +2,86 @@ import sys
 import json
 import ROOT
 from pathlib import Path
-
-# Append the local ``exp`` directory to ``sys.path`` so that bundled
-# modules such as ``CMSPLOTS`` are imported from this repository even if
-# other versions are installed in the environment.  Insert at the front
-# only if it has not been added already.
-exp_path = str(Path(__file__).resolve().parent / 'exp')
-if exp_path not in sys.path:
-    sys.path.insert(0, exp_path)
-
 from utils.channel_map import build_map_FERS1_ixy
+
+# ensure we import your local CMSPLOTS package first
+exp_pkg = Path(__file__).resolve().parent / 'exp' / 'CMSPLOTS'
+sys.path.insert(0, str(exp_pkg))
 from CMSPLOTS.myFunction import DrawHistos
 
-ROOT.gROOT.SetBatch(True)
-
-
 def build_horizontal_map():
-    base = build_map_FERS1_ixy()
+    """
+    Take boards [4,3,2,1,0], tile them across x=0..19 in 4-column blocks
+    (wrap at 20), and drop only Board 2 down by 4 rows.
+    """
+    base = build_map_FERS1_ixy()   # per-board geometry for 64 channels
     maps = {}
-    for board in range(1, 6):
-        shift = 4 * (board - 1)
-        bmap = {ch: (ix + shift, iy) for ch, (ix, iy) in base.items()}
-        maps[f"Board{board}"] = bmap
+    board_order = [4, 3, 2, 1, 0]
+    for idx, board in enumerate(board_order):
+        # horizontal shift: 4,8,12,16,0
+        shift_x = (4 * (idx + 1)) % 20
+        # vertical shift only for the “middle” board (Board 2)
+        shift_y = -4 if board == 3 else 0
+
+        maps[f"Board{board}"] = {
+            ch: ((ix + shift_x) % 20, iy + shift_y)
+            for ch, (ix, iy) in base.items()
+        }
     return maps
 
-
 def display_event(root_file, event_number):
-    noise_file = Path(__file__).resolve().parent / 'exp' / 'results' / 'fers_noises.json'
-    with open(noise_file, 'r') as f:
-        noises = json.load(f)
+    # 1) load noise map
+    noise_path = Path(__file__).parent / 'exp' / 'results' / 'fers_noises.json'
+    noises = json.load(open(noise_path))
 
+    # 2) open file & grab tree
     infile = ROOT.TFile(root_file, 'READ')
-    if not infile or infile.IsZombie():
-        raise RuntimeError(f'Failed to open {root_file}')
+    if infile.IsZombie():
+        raise RuntimeError(f"Failed to open {root_file}")
+    tree = infile.Get("EventTree")
+    if not tree:
+        raise RuntimeError("EventTree not found in file")
 
-    rdf = ROOT.RDataFrame('EventTree', infile)
-    rdf_evt = rdf.Filter(f'event_n == {int(event_number)}')
-    if rdf_evt.Count().GetValue() == 0:
-        raise RuntimeError(f'Event {event_number} not found in file')
+    # 3) find the entry matching event_n
+    evt = int(event_number)
+    entry_id = None
+    for i in range(tree.GetEntries()):
+        tree.GetEntry(i)
+        if tree.event_n == evt:
+            entry_id = i
+            break
+    if entry_id is None:
+        raise RuntimeError(f"Event {evt} not found")
+    tree.GetEntry(entry_id)
 
+    # 4) build map & 20×12 histogram (x=0..19, y=-4..7)
     maps = build_horizontal_map()
-    hist = ROOT.TH2F('event', f'Event {event_number};X;Y', 20, -0.5, 19.5, 8, -0.5, 7.5)
+    hist = ROOT.TH2F(
+        'event', f'Event {evt};iX;iY',
+        20, -0.5, 19.5,   # x bins 0..19
+        12, -4.5,  7.5    # y bins -4..7
+    )
 
-    # Determine whether the per-channel columns already exist or if the
-    # energies are stored in array branches.  ``GetColumnNames`` returns a
-    # ``std::vector<string>`` which supports Python's ``in`` operator.
-    columns = set(str(c) for c in rdf.GetColumnNames())
+    # 5) fill from the C-array branches
+    for board in [4, 3, 2, 1, 0]:
+        arr = getattr(tree, f"FERS_Board{board}_energyHG")
+        for ch, raw in enumerate(arr):
+            ix, iy = maps[f"Board{board}"][ch]
+            hist.Fill(ix, iy, int(raw))
 
-    for board in range(1, 6):
-        array_col = f'FERS_Board{board}_energyHG'
-
-        # Cache the vector of energies if the data is stored as an array
-        energies = None
-        if array_col in columns:
-            energies = rdf_evt.Take['ROOT::VecOps::RVec<unsigned short>'](
-                array_col).GetValue()[0]
-
-        for ch in range(64):
-            col_split = f'{array_col}_{ch}'
-
-            if col_split in columns:
-                val = rdf_evt.Take['unsigned short'](col_split).GetValue()[0]
-            elif energies is not None:
-                val = int(energies[ch])
-            else:
-                raise RuntimeError(f'Column {col_split} not found')
-            ix, iy = maps[f'Board{board}'][ch]
-            noise_key = f'board{board}_ch{ch}'
-            val_adj = val - noises.get(noise_key, 0)
-            hist.Fill(ix, iy, val_adj)
-
-    DrawHistos([hist], '', -0.5, 19.5, 'iX', -0.5, 7.5, 'iY',
-               f'event_display_{event_number}', dology=False,
-               drawoptions=['COLZ,text'], doth2=True, zmin=0, zmax=8000,
-               W_ref=1400)
-
+    # 6) draw with full palette + labels, no CMS/lumi
+    zmax = hist.GetMaximum()
+    DrawHistos(
+        [hist], '', -0.5, 19.5, 'iX', -4.5, 7.5, 'iY',
+        f'event_display_{evt}',
+        dology=False,
+        drawoptions=['COLZ0 TEXT0'],
+        doth2=True,
+        zmin=0, zmax=zmax,
+        W_ref=1400,
+        noLumi=True,
+        noCMS=True
+    )
 
 if __name__ == '__main__':
     if len(sys.argv) != 3:
