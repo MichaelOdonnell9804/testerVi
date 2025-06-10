@@ -50,18 +50,23 @@ def display_event(root_file, event_number):
     columns = set(str(c) for c in rdf.GetColumnNames())
 
     for board in range(1, 6):
+        array_col = f'FERS_Board{board}_energyHG'
+
+        # Cache the vector of energies if the data is stored as an array
+        energies = None
+        if array_col in columns:
+            energies = rdf_evt.Take['ROOT::VecOps::RVec<unsigned short>'](
+                array_col).GetValue()[0]
+
         for ch in range(64):
-            col_split = f'FERS_Board{board}_energyHG_{ch}'
-            col_array = f'FERS_Board{board}_energyHG[{ch}]'
+            col_split = f'{array_col}_{ch}'
 
             if col_split in columns:
-                col = col_split
-            elif col_array in columns or f'FERS_Board{board}_energyHG' in columns:
-                col = col_array
+                val = rdf_evt.Take['unsigned short'](col_split).GetValue()[0]
+            elif energies is not None:
+                val = int(energies[ch])
             else:
                 raise RuntimeError(f'Column {col_split} not found')
-
-            val = rdf_evt.Take['unsigned short'](col).GetValue()[0]
             ix, iy = maps[f'Board{board}'][ch]
             noise_key = f'board{board}_ch{ch}'
             val_adj = val - noises.get(noise_key, 0)
