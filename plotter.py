@@ -3,8 +3,13 @@ import json
 import ROOT
 from pathlib import Path
 
-# Append exp directory for local modules
-sys.path.append(str(Path(__file__).resolve().parent / 'exp'))
+# Append the local ``exp`` directory to ``sys.path`` so that bundled
+# modules such as ``CMSPLOTS`` are imported from this repository even if
+# other versions are installed in the environment.  Insert at the front
+# only if it has not been added already.
+exp_path = str(Path(__file__).resolve().parent / 'exp')
+if exp_path not in sys.path:
+    sys.path.insert(0, exp_path)
 
 from utils.channel_map import build_map_FERS1_ixy
 from CMSPLOTS.myFunction import DrawHistos
@@ -39,9 +44,24 @@ def display_event(root_file, event_number):
     maps = build_horizontal_map()
     hist = ROOT.TH2F('event', f'Event {event_number};X;Y', 20, -0.5, 19.5, 8, -0.5, 7.5)
 
+    # Determine whether the per-channel columns already exist or if the
+    # energies are stored in array branches.  ``GetColumnNames`` returns a
+    # ``std::vector<string>`` which supports Python's ``in`` operator.
+    columns = set(str(c) for c in rdf.GetColumnNames())
+
     for board in range(1, 6):
         for ch in range(64):
-            val = rdf_evt.Take['unsigned short'](f'FERS_Board{board}_energyHG_{ch}').GetValue()[0]
+            col_split = f'FERS_Board{board}_energyHG_{ch}'
+            col_array = f'FERS_Board{board}_energyHG[{ch}]'
+
+            if col_split in columns:
+                col = col_split
+            elif col_array in columns or f'FERS_Board{board}_energyHG' in columns:
+                col = col_array
+            else:
+                raise RuntimeError(f'Column {col_split} not found')
+
+            val = rdf_evt.Take['unsigned short'](col).GetValue()[0]
             ix, iy = maps[f'Board{board}'][ch]
             noise_key = f'board{board}_ch{ch}'
             val_adj = val - noises.get(noise_key, 0)
