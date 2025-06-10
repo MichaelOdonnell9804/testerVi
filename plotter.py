@@ -3,8 +3,10 @@ import json
 import ROOT
 from pathlib import Path
 
-# Append exp directory for local modules
-sys.path.append(str(Path(__file__).resolve().parent / 'exp'))
+# Append exp directories for local modules
+exp_path = Path(__file__).resolve().parent / 'exp'
+sys.path.append(str(exp_path))
+sys.path.append(str(exp_path / 'CMSPLOTS'))
 
 from utils.channel_map import build_map_FERS1_ixy
 from CMSPLOTS.myFunction import DrawHistos
